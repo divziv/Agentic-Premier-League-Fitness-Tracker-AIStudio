@@ -34,7 +34,7 @@ import { doc, onSnapshot, updateDoc, collection, query, limit, getDocs } from 'f
 import AuthScreen from './components/Auth';
 
 // --- Types ---
-type AppMode = 'dashboard' | 'setup' | 'active_workout' | 'profile';
+type AppMode = 'dashboard' | 'setup' | 'active_workout' | 'profile' | 'squad';
 
 interface UserProfile {
   displayName: string;
@@ -78,24 +78,25 @@ export default function App() {
   const [velocity, setVelocity] = useState(0.924);
   const [hrv, setHrv] = useState(54);
   const [availableTime, setAvailableTime] = useState(30);
+  const [location, setLocation] = useState<'Home' | 'Gym'>('Home');
   const [isRaining] = useState(false);
-  
-  // Setup State
-  const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty>('Medium');
-  const [selectedTarget, setSelectedTarget] = useState<TargetArea>('Legs');
-  
+
   // Oracle & Hype State
   const [oracleAdvice, setOracleAdvice] = useState<string>('Analyzing your consistency vectors...');
   const [hypeMessage, setHypeMessage] = useState<string>('');
   const [loadingOracle, setLoadingOracle] = useState(false);
   const [sessionExercises, setSessionExercises] = useState<Exercise[]>([]);
   const [loadingExercises, setLoadingExercises] = useState(false);
-
   const [currentTime, setCurrentTime] = useState(new Date());
 
+  // Setup State
+  const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty>('Medium');
+  const [selectedTarget, setSelectedTarget] = useState<TargetArea>('Legs');
+  
+  // Suggestion calculation
   const suggestion = useMemo(() => 
-    VelocityEngine.getAdaptiveSuggestion(velocity, hrv, availableTime, isRaining),
-    [velocity, hrv, availableTime, isRaining]
+    VelocityEngine.getAdaptiveSuggestion(velocity, hrv, availableTime, isRaining, location),
+    [velocity, hrv, availableTime, isRaining, location]
   );
 
   // Auth Listener
@@ -135,16 +136,18 @@ export default function App() {
       const advice = await getGeminiOracleAdvice({
         velocity,
         hrv,
-        lastWorkoutType: 'HIIT',
+        lastWorkoutType: userProfile?.displayName || 'Pilot',
         weather: 'Cloudy',
         timeAvailable: availableTime,
-        squadProgress: 0.78
+        squadProgress: 0.78,
+        location,
+        suggestedWorkoutTitle: suggestion.title
       });
       setOracleAdvice(advice);
       setLoadingOracle(false);
     };
     fetchOracle();
-  }, [velocity, hrv, availableTime]);
+  }, [velocity, hrv, availableTime, location, suggestion.title, userProfile?.displayName]);
 
   const handleStartSetup = () => setMode('setup');
 
@@ -193,6 +196,13 @@ export default function App() {
           </button>
           
           <button 
+            onClick={() => setMode('squad')}
+            className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${mode === 'squad' ? 'bg-aura-accent text-white shadow-lg shadow-aura-accent/20' : 'bg-aura-card text-aura-text-secondary border border-aura-border hover:bg-aura-accent/10'}`}
+          >
+            <Users size={20} />
+          </button>
+          
+          <button 
             onClick={() => setMode('profile')}
             className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all overflow-hidden border-2 ${mode === 'profile' ? 'border-aura-accent bg-aura-accent/10 text-aura-accent' : 'border-aura-border bg-aura-card text-aura-text-secondary hover:border-aura-accent/30'}`}
           >
@@ -223,6 +233,13 @@ export default function App() {
             currentTime={currentTime}
             onStartSession={handleStartSetup}
             userProfile={userProfile}
+            onViewSquad={() => setMode('squad')}
+            hrv={hrv}
+            setHrv={setHrv}
+            availableTime={availableTime}
+            setAvailableTime={setAvailableTime}
+            location={location}
+            setLocation={setLocation}
           />
         )}
         {mode === 'setup' && (
@@ -251,6 +268,9 @@ export default function App() {
             onBack={() => setMode('dashboard')}
           />
         )}
+        {mode === 'squad' && (
+          <SquadRoster onBack={() => setMode('dashboard')} />
+        )}
       </AnimatePresence>
     </div>
   );
@@ -264,7 +284,14 @@ function Dashboard({
   loadingOracle,
   currentTime,
   onStartSession,
-  userProfile
+  userProfile,
+  onViewSquad,
+  hrv,
+  setHrv,
+  availableTime,
+  setAvailableTime,
+  location,
+  setLocation
 }: { 
   velocity: number;
   suggestion: AdaptiveSuggestion;
@@ -273,6 +300,13 @@ function Dashboard({
   currentTime: Date;
   onStartSession: () => void;
   userProfile: UserProfile | null;
+  onViewSquad: () => void;
+  hrv: number;
+  setHrv: (v: number) => void;
+  availableTime: number;
+  setAvailableTime: (v: number) => void;
+  location: 'Home' | 'Gym';
+  setLocation: (loc: 'Home' | 'Gym') => void;
 }) {
   const ProfileIcon = PROFILE_ICONS.find(i => i.id === userProfile?.avatarId)?.Icon || Zap;
   const [showMilestone, setShowMilestone] = useState(false);
@@ -454,83 +488,50 @@ function Dashboard({
 
           <div className="bg-aura-card border border-aura-border rounded-3xl p-6 flex flex-col flex-1 relative overflow-hidden">
             <div className="flex justify-between items-center mb-6">
-              <span className="text-[11px] uppercase tracking-[1.5px] font-black text-aura-text-secondary">Squad Vanguard</span>
-              <div className="flex -space-x-2">
-                {[12, 45, 89, 23, 67].map(i => (
-                  <div key={i} className="w-7 h-7 rounded-lg bg-aura-surface border-2 border-aura-card overflow-hidden ring-1 ring-white/10">
-                    <img src={`https://picsum.photos/seed/${i}/40/40`} referrerPolicy="no-referrer" />
-                  </div>
-                ))}
-              </div>
+              <span className="text-[11px] uppercase tracking-[1.5px] font-black text-aura-text-secondary">Simulated Environment</span>
             </div>
             
-            <div className="bg-aura-accent/10 p-4 rounded-2xl border border-aura-accent/20 mb-6 flex items-start gap-3">
-              <Zap size={14} className="text-aura-accent shrink-0 mt-1" />
+            <div className="space-y-4">
+              {/* HRV Simulator */}
               <div>
-                <p className="text-[9px] text-aura-accent font-black tracking-widest uppercase mb-0.5">Active Boost</p>
-                <p className="text-white text-[11px] font-bold leading-tight">Shared XP multiplier active for the next 45 minutes.</p>
-              </div>
-            </div>
-
-            <div className="flex-1 bg-black/40 rounded-2xl border border-white/5 overflow-hidden flex flex-col relative">
-              <div className="bg-aura-surface px-4 py-3 text-[10px] font-black border-b border-white/5 flex justify-between items-center">
-                <span className="flex items-center gap-2">
-                  <Navigation size={10} className="text-aura-accent" />
-                  SQUAD COLLECTIVE: NEOM COAST
-                </span>
-                <span className="text-aura-green tracking-widest uppercase text-[9px]">84.2% GOAL</span>
-              </div>
-              
-              <div className="flex-1 relative p-4 group overflow-hidden">
-                 {/* Better Squad Map visualization */}
-                 <div className="absolute inset-0 bg-[url('https://picsum.photos/seed/map/400/300?blur=10')] opacity-10" />
-                 <svg viewBox="0 0 200 100" className="absolute inset-0 w-full h-full p-6">
-                    <defs>
-                      <linearGradient id="pathGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-                        <stop offset="0%" stopColor="var(--color-aura-accent)" stopOpacity="0.2" />
-                        <stop offset="84%" stopColor="var(--color-aura-accent)" stopOpacity="1" />
-                        <stop offset="100%" stopColor="white" stopOpacity="0.1" />
-                      </linearGradient>
-                    </defs>
-                    <path 
-                      d="M 10 80 Q 30 10, 60 50 T 130 30 T 190 70" 
-                      stroke="url(#pathGrad)" 
-                      fill="none" 
-                      strokeWidth="4" 
-                      strokeLinecap="round"
-                    />
-                    <motion.circle 
-                      cx="145" cy="40" r="4" 
-                      fill="white" 
-                      className="shadow-[0_0_12px_white]"
-                      animate={{ r: [4, 6, 4] }}
-                      transition={{ repeat: Infinity }}
-                    />
-                    <circle cx="10" cy="80" r="3" fill="var(--color-aura-accent)" />
-                    <circle cx="190" cy="70" r="3" fill="rgba(255,255,255,0.2)" />
-                 </svg>
-                 
-                 <div className="absolute top-4 right-4 bg-black/60 px-3 py-1.5 rounded-lg border border-white/10 text-[9px] font-bold">
-                    DESTINATION: VIRTUAL GOA
-                 </div>
-                 
-                 <div className="absolute bottom-4 left-4 flex gap-2">
-                    <div className="flex flex-col">
-                      <span className="text-[8px] text-aura-text-secondary uppercase">Progress</span>
-                      <span className="text-xs font-black">1,842.5 KM</span>
-                    </div>
-                 </div>
+                <div className="flex justify-between text-[10px] font-black uppercase mb-2">
+                   <span>Readiness (HRV)</span>
+                   <span className={hrv < 40 ? 'text-aura-red' : 'text-aura-green'}>{hrv} MS</span>
+                </div>
+                <input 
+                  type="range" min="20" max="100" value={hrv} 
+                  onChange={(e) => setHrv(parseInt(e.target.value))}
+                  className="w-full h-1 bg-aura-surface rounded-full appearance-none accent-aura-accent"
+                />
               </div>
 
-              <div className="p-4 bg-white/[0.02] border-t border-white/5 grid grid-cols-2 gap-4">
-                  <div className="flex flex-col">
-                    <span className="text-[8px] text-aura-text-secondary uppercase font-bold">Milestones</span>
-                    <span className="text-xs font-black">12/15 Completed</span>
-                  </div>
-                  <div className="flex flex-col text-right">
-                    <span className="text-[8px] text-aura-text-secondary uppercase font-bold">Squad Rank</span>
-                    <span className="text-xs font-black text-aura-accent">Top 12%</span>
-                  </div>
+              {/* Time Simulator */}
+              <div>
+                <div className="flex justify-between text-[10px] font-black uppercase mb-2">
+                   <span>Uptime (Time)</span>
+                   <span>{availableTime} MIN</span>
+                </div>
+                <input 
+                  type="range" min="10" max="90" value={availableTime} 
+                  onChange={(e) => setAvailableTime(parseInt(e.target.value))}
+                  className="w-full h-1 bg-aura-surface rounded-full appearance-none accent-aura-accent"
+                />
+              </div>
+
+              {/* Geofencing Simulator */}
+              <div className="grid grid-cols-2 gap-2 mt-4">
+                <button 
+                  onClick={() => setLocation('Home')}
+                  className={`py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all ${location === 'Home' ? 'bg-aura-accent border-aura-accent text-white shadow-lg' : 'bg-aura-surface border-aura-border text-aura-text-secondary opacity-60'}`}
+                >
+                  Home Fence
+                </button>
+                <button 
+                  onClick={() => setLocation('Gym')}
+                  className={`py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all ${location === 'Gym' ? 'bg-aura-accent border-aura-accent text-white shadow-lg' : 'bg-aura-surface border-aura-border text-aura-text-secondary opacity-60'}`}
+                >
+                  Gym Fence
+                </button>
               </div>
             </div>
           </div>
@@ -636,6 +637,7 @@ function ActiveWorkout({
   const [isAhead, setIsAhead] = useState(true);
   const [delta, setDelta] = useState(2.4);
   const [lastHapticState, setLastHapticState] = useState<boolean | null>(null);
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -679,7 +681,7 @@ function ActiveWorkout({
     >
       <div className="flex justify-between items-center mb-10">
         <button 
-          onClick={onEndSession} 
+          onClick={() => setShowExitConfirm(true)} 
           className="flex items-center gap-2 px-6 py-3 rounded-2xl bg-aura-card border border-aura-border hover:bg-aura-surface transition-all active:scale-95 shadow-lg"
         >
           <ArrowLeft size={16} />
@@ -837,11 +839,55 @@ function ActiveWorkout({
       </div>
 
       <button 
-        onClick={onEndSession}
+        onClick={() => setShowExitConfirm(true)}
         className="mt-10 w-full max-w-md mx-auto bg-white hover:bg-aura-green hover:text-aura-bg transition-all py-7 rounded-3xl text-aura-bg font-black text-xl tracking-tighter shadow-2xl hover:scale-[1.02] active:scale-95"
       >
         SYNC PROTOCOL DATA
       </button>
+
+      <AnimatePresence>
+        {showExitConfirm && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/80 backdrop-blur-md"
+          >
+            <motion.div 
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 20 }}
+              className="bg-aura-card border border-white/10 p-10 rounded-[40px] max-w-sm w-full shadow-2xl text-center space-y-8"
+            >
+              <div className="w-20 h-20 rounded-[28px] bg-aura-accent/10 flex items-center justify-center text-aura-accent mx-auto">
+                <Target size={40} className="animate-pulse" />
+              </div>
+              
+              <div>
+                <h3 className="text-3xl font-black tracking-tighter mb-3">Terminate Protocol?</h3>
+                <p className="text-aura-text-secondary text-sm font-medium leading-relaxed">
+                  Ending this session now will stop all active data synchronant tracking. Consistency velocity may be affected.
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-3">
+                <button 
+                  onClick={onEndSession}
+                  className="w-full bg-white text-aura-bg py-5 rounded-2xl font-black text-lg tracking-tighter hover:bg-aura-red hover:text-white transition-all active:scale-95"
+                >
+                  CONFIRM TERMINATION
+                </button>
+                <button 
+                  onClick={() => setShowExitConfirm(false)}
+                  className="w-full bg-aura-surface border border-aura-border text-aura-text-secondary py-5 rounded-2xl font-black text-xs uppercase tracking-[2px] hover:text-white hover:bg-white/5 transition-all"
+                >
+                  RESUME UPTIME
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
@@ -969,6 +1015,131 @@ function ProfileSettings({
           </div>
         </section>
       </div>
+    </motion.main>
+  );
+}
+
+// --- Squad Roster Component ---
+function SquadRoster({ onBack }: { onBack: () => void }) {
+  const SQUAD_MEMBERS = [
+    { id: '1', name: 'VALKYRIE', avatar: '12', velocity: 0.98, role: 'Lead Optimizer', status: 'In Session' },
+    { id: '2', name: 'ORION', avatar: '45', velocity: 0.85, role: 'Endurance Pilot', status: 'Ready' },
+    { id: '3', name: 'ECHO', avatar: '89', velocity: 0.92, role: 'Recovery Spec', status: 'Resting' },
+    { id: '4', name: 'PHOENIX', avatar: '23', velocity: 0.78, role: 'Strength Vector', status: 'Online' },
+    { id: '5', name: 'ZENITH', avatar: '67', velocity: 0.95, role: 'Flex Navigator', status: 'Active' },
+  ];
+
+  return (
+    <motion.main 
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      className="flex-1 flex flex-col p-12 max-w-5xl mx-auto overflow-y-auto"
+    >
+      <header className="flex justify-between items-center mb-12">
+        <div className="flex items-center gap-6">
+          <button 
+            onClick={onBack}
+            className="w-12 h-12 rounded-2xl bg-aura-card border border-aura-border flex items-center justify-center text-aura-text-secondary hover:text-white transition-all shadow-lg active:scale-90"
+          >
+            <ArrowLeft size={20} />
+          </button>
+          <div>
+            <h2 className="text-4xl font-black tracking-tighter mb-1 uppercase text-white">Squad Vanguard Roster</h2>
+            <p className="text-aura-text-secondary font-black text-[10px] tracking-[3px] uppercase">Fleet Designation: Neom Coast Pathfinders</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-4 bg-aura-accent/10 px-6 py-3 rounded-2xl border border-aura-accent/20">
+          <Users className="text-aura-accent" size={18} />
+          <span className="text-xs font-black tracking-widest uppercase text-aura-accent">5 / 5 OPERATIVES</span>
+        </div>
+      </header>
+
+      <div className="grid grid-cols-1 gap-4">
+        {SQUAD_MEMBERS.map((member, i) => (
+          <motion.div 
+            initial={{ x: -20, opacity: 0 }}
+            animate={{ x: 0, opacity: 1 }}
+            transition={{ delay: i * 0.1 }}
+            key={member.id}
+            className="bg-aura-card border border-white/5 rounded-[32px] p-6 flex items-center justify-between group hover:border-aura-accent/50 transition-all shadow-xl hover:shadow-aura-accent/5"
+          >
+            <div className="flex items-center gap-6">
+              <div className="w-16 h-16 rounded-2xl bg-aura-surface border border-aura-border overflow-hidden ring-2 ring-white/5 group-hover:ring-aura-accent/30 transition-all">
+                <img 
+                  src={`https://picsum.photos/seed/${member.avatar}/100/100`} 
+                  alt={member.name} 
+                  className="w-full h-full object-cover" 
+                  referrerPolicy="no-referrer"
+                />
+              </div>
+              <div>
+                <h3 className="text-xl font-black tracking-tight group-hover:text-aura-accent transition-colors text-white">{member.name}</h3>
+                <p className="text-[10px] font-bold text-aura-text-secondary uppercase tracking-[1px]">{member.role}</p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-12">
+              <div className="flex flex-col text-center">
+                 <span className="text-[9px] font-black text-aura-text-secondary uppercase tracking-widest mb-1">Consistency</span>
+                 <span className="text-lg font-black text-aura-green">{(member.velocity * 100).toFixed(0)}%</span>
+              </div>
+              
+              <div className="w-32 hidden md:block">
+                <div className="flex justify-between text-[9px] font-bold uppercase mb-1 opacity-60">
+                  <span className="text-white">Sync</span>
+                  <span className="text-aura-accent">Active</span>
+                </div>
+                <div className="h-1 bg-aura-surface rounded-full overflow-hidden p-[1px] border border-white/5">
+                  <motion.div 
+                    initial={{ width: 0 }}
+                    animate={{ width: `${member.velocity * 100}%` }}
+                    className="h-full bg-aura-accent rounded-full" 
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 w-32 justify-end">
+                <div className={`w-2 h-2 rounded-full ${member.status === 'In Session' || member.status === 'Active' ? 'bg-aura-green animate-pulse shadow-[0_0_8px_var(--color-aura-green)]' : 'bg-aura-border opacity-50'}`} />
+                <span className={`text-[10px] font-black uppercase tracking-widest ${member.status === 'In Session' || member.status === 'Active' ? 'text-white' : 'text-aura-text-secondary'}`}>
+                  {member.status}
+                </span>
+              </div>
+            </div>
+          </motion.div>
+        ))}
+      </div>
+
+      <footer className="mt-12 p-8 bg-aura-surface/50 rounded-[40px] border border-white/5 grid grid-cols-1 md:grid-cols-3 gap-8">
+        <div className="space-y-2">
+            <p className="text-[9px] font-black text-aura-accent uppercase tracking-widest">Shared XP Goal</p>
+            <div className="flex items-baseline gap-2">
+              <span className="text-2xl font-black text-white">12,400</span>
+              <span className="text-[10px] text-aura-text-secondary font-bold uppercase">/ 15,000</span>
+            </div>
+            <div className="h-1.5 bg-aura-card rounded-full overflow-hidden">
+                <div className="h-full bg-aura-accent w-[82%]" />
+            </div>
+        </div>
+        <div className="space-y-2">
+            <p className="text-[9px] font-black text-aura-accent uppercase tracking-widest">Active Operatives</p>
+            <div className="flex items-center gap-3">
+              <div className="flex -space-x-2">
+                {SQUAD_MEMBERS.filter(m => m.status !== 'Resting').map(m => (
+                  <div key={m.id} className="w-8 h-8 rounded-lg border-2 border-aura-surface overflow-hidden">
+                    <img src={`https://picsum.photos/seed/${m.avatar}/40/40`} referrerPolicy="no-referrer" />
+                  </div>
+                ))}
+              </div>
+              <span className="text-xs font-bold text-white uppercase tracking-tighter">{SQUAD_MEMBERS.filter(m => m.status !== 'Resting').length} Online</span>
+            </div>
+        </div>
+        <div className="flex flex-col justify-center">
+          <button className="bg-aura-accent hover:bg-white text-aura-bg text-[10px] font-black uppercase tracking-[2px] py-4 rounded-2xl transition-all active:scale-95 shadow-lg shadow-aura-accent/20">
+            Broadcast Sync Signal
+          </button>
+        </div>
+      </footer>
     </motion.main>
   );
 }

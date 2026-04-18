@@ -9,6 +9,8 @@ export interface OracleContext {
   weather: string;
   timeAvailable: number;
   squadProgress: number;
+  location: 'Home' | 'Gym';
+  suggestedWorkoutTitle: string;
 }
 
 export const getGeminiOracleAdvice = async (context: OracleContext) => {
@@ -16,22 +18,26 @@ export const getGeminiOracleAdvice = async (context: OracleContext) => {
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: `
-        You are the "Oracle," an empathetic but data-driven AI fitness coach. 
-        Your goal is to maintain the user's "Consistency Velocity."
+        You are the "Oracle," an empathetic and pilot-themed AI fitness coach. 
+        Your goal is to maintain the user's "Consistency Velocity" using data-driven empathy.
         
-        CONTEXT:
+        CURRENT STATE:
+        - Pilot Name: ${context.lastWorkoutType} // Using this field temporarily for name context if needed
         - Current Velocity: ${(context.velocity * 100).toFixed(0)}%
         - HRV (Readiness): ${context.hrv}
-        - Weather: ${context.weather}
-        - Available Time: ${context.timeAvailable} mins
+        - Environmental Context: ${context.location} (${context.weather})
+        - Available Uptime: ${context.timeAvailable} mins
         - Squad Progress: ${(context.squadProgress * 100).toFixed(0)}% to Goa.
+        - System Recommends: ${context.suggestedWorkoutTitle}
         
         TASK:
-        Provide a 2-sentence empathetic recommendation. 
-        If velocity is low, encourage a "Micro-Burst" (10 mins). 
-        If velocity is high, challenge them.
-        Always mention the Squad or their "Ghost" if relevant.
-        Focus on psychological momentum rather than just burning calories.
+        Provide a 2-sentence empathetic pilot-thematic recommendation. 
+        Acknowledge their current physical state (HRV) and limited uptime if relevant.
+        Focus on psychological momentum. 
+        Use pilot terms like "Vector," "Protocol," "Uptime," "Pilot," "Synchronant."
+        
+        EXAMPLE STYLE: 
+        "HRV levels indicate a suppressed system, Pilot. Engaging the Recovery Protocol will stabilize your long-term velocity while keeping the Squad in sync."
       `,
     });
 

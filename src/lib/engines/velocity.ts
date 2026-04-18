@@ -64,62 +64,51 @@ export const VelocityEngine = {
     velocity: number,
     hrv: number,
     availableTime: number,
-    isRaining: boolean
+    isRaining: boolean,
+    location: 'Home' | 'Gym'
   ): AdaptiveSuggestion => {
-    // 1. Check for physical burnout
+    // 1. Check Readiness: Is HRV low?
     if (hrv < 40) {
       return {
         type: 'RECOVERY',
-        title: 'Active Recovery Flow',
-        reason: 'HRV is suppressed (Below 40). Priority is nervous system reset.',
-        duration: 15,
+        title: 'Active Recovery Protocol',
+        reason: 'Critical: HRV is suppressed. Suggesting Yoga or Light Walking for nervous system reset.',
+        duration: 20,
         intensity: 'Low',
         icon: 'Wind'
       };
     }
 
-    // 2. Adjust for context: Rain + Home
-    if (isRaining) {
+    // 2. Check Time: Does the user have <30 mins?
+    if (availableTime < 30) {
       return {
         type: 'BURST',
-        title: 'Indoor Power Burst',
-        reason: 'Rain detected. Pivoting to an indoor HIIT sequence to maintain streak.',
-        duration: 20,
+        title: 'High-Intensity Tactical HIIT',
+        reason: 'Time window under 30m detected. Initiating maximum efficiency anaerobic protocol.',
+        duration: availableTime,
         intensity: 'High',
         icon: 'Zap'
       };
     }
 
-    // 3. Stalling Velocity or Time Constraint
-    if (velocity < 0.6 || availableTime < 25) {
-      return {
-        type: 'BURST',
-        title: '10-Minute Momentum',
-        reason: 'Velocity is dip-trending. A micro-session is better than zero.',
-        duration: 10,
-        intensity: 'High',
-        icon: 'Zap'
-      };
-    }
-
-    // 4. On Fire / High Velocity
-    if (velocity > 0.95) {
+    // 3. Check Environment: Gym vs Home (Geofencing)
+    if (location === 'Gym') {
       return {
         type: 'PERFORMANCE',
-        title: 'Ghost Challenge',
-        reason: 'You are outperforming your baseline. Ready to race your past self.',
+        title: 'Heavy Lift Protocol',
+        reason: 'Gym geofence handshake established. Accessing compound loading sequence.',
         duration: 45,
         intensity: 'Extreme',
         icon: 'Ghost'
       };
     }
 
-    // Default
+    // Default: Bodyweight Circuit for Home/Generic
     return {
       type: 'STANDARD',
-      title: 'Solid Baseline Session',
-      reason: 'Steady velocity. Maintain standard volume.',
-      duration: 30,
+      title: 'Bodyweight Force Circuit',
+      reason: 'Home deployment detected. Optimizing for functional resistance and high-volume bodyweight.',
+      duration: 35,
       intensity: 'Moderate',
       icon: 'Activity'
     };
