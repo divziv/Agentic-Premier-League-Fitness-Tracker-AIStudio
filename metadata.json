@@ -1,0 +1,13 @@
+{
+  "name": "Aura Fitness: Adaptive Consistency Engine",
+  "description": "A high-performance fitness system that uses Dynamic Difficulty Adjustment, Social Ghosts, and Squad Accountability to eliminate workout friction and maintain consistency velocity.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "Gemini AI Oracle",
+    "Dynamic Difficulty Adjustment",
+    "Social Ghost Simulation",
+    "Squad Progress Tracking"
+  ]
+}

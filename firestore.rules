@@ -1,0 +1,82 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 0. Default Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 1. Core Primitives
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+    
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // 2. Entity Validations
+    function isValidUserProfile(data) {
+      return data.displayName is string && data.displayName.size() >= 2 && data.displayName.size() <= 50
+          && data.avatarId is string && data.avatarId.size() <= 64
+          && (data.get('velocity', 1.0) is number)
+          && (data.get('streak', 0) is int);
+    }
+
+    function isValidSquad(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 100
+          && data.members is list && data.members.size() <= 5
+          && data.progress is number && data.progress >= 0;
+    }
+
+    function isValidSession(data) {
+      return data.userId == request.auth.uid
+          && data.type is string 
+          && data.distance is number && data.distance >= 0
+          && data.timestamp == request.time;
+    }
+
+    // 3. Match Blocks
+    
+    match /users/{userId} {
+      allow get: if isSignedIn();
+      allow create: if isOwner(userId) && isValidUserProfile(incoming())
+                    && incoming().keys().hasAll(['displayName', 'avatarId']);
+      allow update: if isOwner(userId) && isValidUserProfile(incoming())
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'avatarId', 'velocity', 'streak', 'updatedAt'])
+                    && (incoming().get('updatedAt', null) == request.time);
+    }
+
+    match /squads/{squadId} {
+      allow get: if isSignedIn() && (request.auth.uid in existing().members);
+      allow list: if isSignedIn() && (request.auth.uid in resource.data.members);
+      
+      allow update: if isSignedIn() 
+                    && (request.auth.uid in existing().members)
+                    && isValidSquad(incoming())
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['totalXp', 'progress', 'milestonesReached']);
+    }
+
+    match /squads/{squadId}/sessions/{sessionId} {
+      function isSquadMember(sId) {
+        return request.auth.uid in get(/databases/$(database)/documents/squads/$(sId)).data.members;
+      }
+
+      allow read: if isSignedIn() && isSquadMember(squadId);
+      allow create: if isSignedIn() && isSquadMember(squadId) && isValidSession(incoming()) && isValidId(sessionId);
+    }
+  }
+}

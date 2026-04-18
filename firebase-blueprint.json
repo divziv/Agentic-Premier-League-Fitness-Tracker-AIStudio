@@ -1,0 +1,61 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Stores user customization and basic metrics.",
+      "type": "object",
+      "properties": {
+        "displayName": { "type": "string", "description": "User's preferred name." },
+        "avatarId": { "type": "string", "description": "ID of the selected profile icon." },
+        "email": { "type": "string", "format": "email" },
+        "velocity": { "type": "number", "description": "Current consistency velocity." },
+        "streak": { "type": "integer", "description": "Current day streak count." },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["displayName", "avatarId"]
+    },
+    "Squad": {
+      "title": "Squad",
+      "description": "A collaborative group of users working towards a shared goal.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "members": { "type": "array", "description": "List of user UIDs in the squad." },
+        "totalXp": { "type": "number" },
+        "progress": { "type": "number", "description": "Collective distance towards destination." },
+        "milestonesReached": { "type": "integer" }
+      },
+      "required": ["name", "members"]
+    },
+    "WorkoutSession": {
+      "title": "Workout Session",
+      "description": "Records of individual workout completions.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "squadId": { "type": "string" },
+        "type": { "type": "string" },
+        "distance": { "type": "number" },
+        "duration": { "type": "integer" },
+        "xpGained": { "type": "integer" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "type", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Individual user profiles."
+    },
+    "/squads/{squadId}": {
+      "schema": "Squad",
+      "description": "Shared squad data."
+    },
+    "/squads/{squadId}/sessions/{sessionId}": {
+      "schema": "WorkoutSession",
+      "description": "History of sessions completed by squad members."
+    }
+  }
+}

@@ -1,0 +1,52 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Professional Polish Theme Colors */
+  --color-aura-bg: #0B0D11;
+  --color-aura-surface: #161922;
+  --color-aura-card: #1C212B;
+  --color-aura-accent: #4D96FF;
+  --color-aura-green: #00F5A0;
+  --color-aura-orange: #FFAB4C;
+  --color-aura-border: #2E3A59;
+  --color-aura-text-secondary: #8F9BB3;
+}
+
+@layer base {
+  body {
+    @apply bg-aura-bg text-white font-sans antialiased;
+  }
+}
+
+.velocity-gradient {
+  background: linear-gradient(135deg, var(--color-aura-accent) 0%, var(--color-aura-green) 100%);
+}
+
+.glass-morphism {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--color-aura-border);
+}
+
+.oracle-gradient {
+  background: linear-gradient(180deg, #1C212B 0%, #11141D 100%);
+}
+
+.suggestion-box {
+  background: rgba(77, 150, 255, 0.1);
+  border: 1px dashed var(--color-aura-accent);
+}
+
+.ghost-shine {
+  animation: ghost-pulse 2s infinite;
+}
+
+@keyframes ghost-pulse {
+  0% { text-shadow: 0 0 10px rgba(77, 150, 255, 0); }
+  50% { text-shadow: 0 0 20px rgba(77, 150, 255, 0.5); }
+  100% { text-shadow: 0 0 10px rgba(77, 150, 255, 0); }
+}
