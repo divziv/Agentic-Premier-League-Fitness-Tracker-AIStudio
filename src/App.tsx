@@ -1,8 +1,3 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Zap, 
@@ -10,7 +5,6 @@ import {
   Wind, 
   Ghost, 
   Users, 
-  ChevronRight, 
   MapPin, 
   Trophy, 
   Flame,
@@ -19,29 +13,25 @@ import {
   Navigation,
   Calendar,
   Target,
-  ChevronDown,
   MonitorPlay,
   Heart
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { VelocityEngine, AdaptiveSuggestion, Difficulty, TargetArea, Exercise } from './lib/engines/velocity';
+import { Difficulty, TargetArea, Exercise } from './lib/engines/velocity';
 import { HapticEngine } from './lib/engines/haptic';
-import { getGeminiOracleAdvice, getHypeMessage, generateExerciseVisual } from './services/geminiOracle';
 import { format } from 'date-fns';
-import { auth, db } from './lib/firebase';
-import { onAuthStateChanged, User } from 'firebase/auth';
-import { doc, onSnapshot, updateDoc, collection, query, limit, getDocs } from 'firebase/firestore';
+
+// Offline engines & store
+import { useAppStore, UserProfile } from './data/store';
+import { calculateConsistencyVelocity } from './engine/consistencyVelocity';
+import { getOracleRecommendation, getHypeMessage } from './engine/oracle';
+import { getSimulatedTimeContext } from './engine/contextSim';
 import AuthScreen from './components/Auth';
+import Visualizer3D from './features/Vision/Visualizer3D';
+import PoseDetector from './features/Vision/PoseDetector';
 
 // --- Types ---
 type AppMode = 'dashboard' | 'setup' | 'active_workout' | 'profile' | 'squad';
-
-interface UserProfile {
-  displayName: string;
-  avatarId: string;
-  velocity: number;
-  streak: number;
-}
 
 const PROFILE_ICONS = [
   { id: 'zap', Icon: Zap },
@@ -52,7 +42,6 @@ const PROFILE_ICONS = [
   { id: 'users', Icon: Users },
 ];
 
-// --- Mock Defaults ---
 const DEFAULT_GHOST_TRAIL = Array.from({ length: 120 }, (_, i) => ({
   time: i * 1,
   dist: i * 2.5 + Math.random() * 2
@@ -69,112 +58,81 @@ const EXERCISE_LIBRARY: Record<TargetArea, string[]> = {
 
 // --- Main Application ---
 export default function App() {
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
-  const [authLoading, setAuthLoading] = useState(true);
+  const { state, logout, saveWorkout, updateVelocity } = useAppStore();
   const [mode, setMode] = useState<AppMode>('dashboard');
   
-  // Metrics
-  const [velocity, setVelocity] = useState(0.924);
+  // Metrics Simulators
   const [hrv, setHrv] = useState(54);
   const [availableTime, setAvailableTime] = useState(30);
   const [location, setLocation] = useState<'Home' | 'Gym'>('Home');
-  const [isRaining] = useState(false);
 
-  // Oracle & Hype State
-  const [oracleAdvice, setOracleAdvice] = useState<string>('Analyzing your consistency vectors...');
-  const [hypeMessage, setHypeMessage] = useState<string>('');
-  const [loadingOracle, setLoadingOracle] = useState(false);
-  const [sessionExercises, setSessionExercises] = useState<Exercise[]>([]);
-  const [loadingExercises, setLoadingExercises] = useState(false);
+  // Engine Derived State
   const [currentTime, setCurrentTime] = useState(new Date());
-
+  
   // Setup State
   const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty>('Medium');
   const [selectedTarget, setSelectedTarget] = useState<TargetArea>('Legs');
   
-  // Suggestion calculation
-  const suggestion = useMemo(() => 
-    VelocityEngine.getAdaptiveSuggestion(velocity, hrv, availableTime, isRaining, location),
-    [velocity, hrv, availableTime, isRaining, location]
-  );
+  const [sessionExercises, setSessionExercises] = useState<Exercise[]>([]);
+  
+  // Calculate Velocity locally
+  const cvData = useMemo(() => {
+    return calculateConsistencyVelocity(state.workoutHistory, state.user?.streak || 0);
+  }, [state.workoutHistory, state.user?.streak]);
 
-  // Auth Listener
+  // Sync velocity back to user profile if it changed significantly
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
-      setCurrentUser(user);
-      setAuthLoading(false);
-      if (!user) {
-        setUserProfile(null);
-      }
-    });
-    return unsub;
-  }, []);
-
-  // Profile Listener
-  useEffect(() => {
-    if (currentUser) {
-      const unsub = onSnapshot(doc(db, 'users', currentUser.uid), (snap) => {
-        if (snap.exists()) {
-          const data = snap.data() as UserProfile;
-          setUserProfile(data);
-          setVelocity(data.velocity || 0.92);
-        }
-      });
-      return unsub;
+    if (state.user && Math.abs(state.user.velocity - cvData.score) > 1) {
+      updateVelocity(cvData.score, state.user.streak);
     }
-  }, [currentUser]);
+  }, [cvData.score, state.user, updateVelocity]);
+
+  // Local Oracle Recommendation
+  const suggestion = useMemo(() => {
+    const energyLevel = hrv > 60 ? 'High' : hrv < 40 ? 'Low' : 'Medium';
+    return getOracleRecommendation(energyLevel, availableTime, location, selectedTarget, cvData.score);
+  }, [hrv, availableTime, location, selectedTarget, cvData.score]);
+
+  // Local Hype Message
+  const hypeMessage = useMemo(() => {
+    return getHypeMessage(cvData.state, state.user?.streak || 0);
+  }, [cvData.state, state.user?.streak]);
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
 
-  useEffect(() => {
-    const fetchOracle = async () => {
-      setLoadingOracle(true);
-      const advice = await getGeminiOracleAdvice({
-        velocity,
-        hrv,
-        lastWorkoutType: userProfile?.displayName || 'Pilot',
-        weather: 'Cloudy',
-        timeAvailable: availableTime,
-        squadProgress: 0.78,
-        location,
-        suggestedWorkoutTitle: suggestion.title
-      });
-      setOracleAdvice(advice);
-      setLoadingOracle(false);
-    };
-    fetchOracle();
-  }, [velocity, hrv, availableTime, location, suggestion.title, userProfile?.displayName]);
-
   const handleStartSetup = () => setMode('setup');
 
-  const handleBeginWorkout = async () => {
-    setLoadingExercises(true);
-    const hype = await getHypeMessage(userProfile?.displayName || 'Pilot', selectedTarget, selectedDifficulty);
-    setHypeMessage(hype);
-
+  const handleBeginWorkout = () => {
     const exerciseNames = EXERCISE_LIBRARY[selectedTarget];
     const pickedName = exerciseNames[Math.floor(Math.random() * exerciseNames.length)];
-    const imageUrl = await generateExerciseVisual(pickedName);
-
+    
     setSessionExercises([{
       name: pickedName,
       reps: selectedDifficulty === 'Easy' ? '3x8' : selectedDifficulty === 'Medium' ? '4x12' : '5x15',
-      visualDescription: `Maintaining stability and tension through the full range of motion.`,
-      imageUrl
+      visualDescription: `Maintaining stability and tension through the full range of motion. Focus on form over speed.`,
     }]);
 
-    setLoadingExercises(false);
     setMode('active_workout');
   };
 
-  if (authLoading) return <div className="min-h-screen bg-aura-bg flex items-center justify-center"><motion.div animate={{ scale: [1, 1.1, 1] }} transition={{ repeat: Infinity }} className="w-12 h-12 rounded-xl bg-aura-accent" /></div>;
-  if (!currentUser) return <AuthScreen />;
+  const handleEndWorkout = (duration: number) => {
+    saveWorkout({
+      duration,
+      difficulty: selectedDifficulty,
+      target: selectedTarget,
+      completed: true
+    });
+    // Give a bump to streak
+    updateVelocity(cvData.score, (state.user?.streak || 0) + 1);
+    setMode('dashboard');
+  };
+
+  if (!state.user) return <AuthScreen />;
   
-  const ProfileIcon = PROFILE_ICONS.find(i => i.id === userProfile?.avatarId)?.Icon || Zap;
+  const ProfileIcon = PROFILE_ICONS.find(i => i.id === state.user?.avatarId)?.Icon || Zap;
 
   return (
     <div className="min-h-screen bg-aura-bg flex text-white font-sans selection:bg-aura-accent selection:text-white">
@@ -201,7 +159,7 @@ export default function App() {
           >
             <Users size={20} />
           </button>
-          
+
           <button 
             onClick={() => setMode('profile')}
             className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all overflow-hidden border-2 ${mode === 'profile' ? 'border-aura-accent bg-aura-accent/10 text-aura-accent' : 'border-aura-border bg-aura-card text-aura-text-secondary hover:border-aura-accent/30'}`}
@@ -215,7 +173,7 @@ export default function App() {
             <Trophy size={18} />
           </div>
           <button 
-            onClick={() => auth.signOut()} 
+            onClick={logout} 
             className="w-10 h-10 rounded-xl bg-aura-card flex items-center justify-center text-aura-text-secondary border border-aura-border hover:bg-red-500/10 hover:text-red-400 transition-all active:scale-90"
           >
             <ArrowLeft className="rotate-180" size={18} />
@@ -226,14 +184,13 @@ export default function App() {
       <AnimatePresence mode="wait">
         {mode === 'dashboard' && (
           <Dashboard 
-            velocity={velocity} 
+            cvScore={cvData.score}
+            cvState={cvData.state}
             suggestion={suggestion}
-            oracleAdvice={oracleAdvice}
-            loadingOracle={loadingOracle}
+            hypeMessage={hypeMessage}
             currentTime={currentTime}
             onStartSession={handleStartSetup}
-            userProfile={userProfile}
-            onViewSquad={() => setMode('squad')}
+            userProfile={state.user}
             hrv={hrv}
             setHrv={setHrv}
             availableTime={availableTime}
@@ -249,7 +206,6 @@ export default function App() {
             target={selectedTarget}
             onSetTarget={setSelectedTarget}
             onBegin={handleBeginWorkout}
-            loading={loadingExercises}
             onBack={() => setMode('dashboard')}
           />
         )}
@@ -258,15 +214,13 @@ export default function App() {
             suggestion={suggestion}
             hypeMessage={hypeMessage}
             exercises={sessionExercises}
-            onEndSession={() => setMode('dashboard')}
+            onEndSession={handleEndWorkout}
+            use3DVisualizer={state.user.use3DVisualizer}
+            enableComputerVision={state.user.enableComputerVision}
           />
         )}
-        {mode === 'profile' && userProfile && (
-          <ProfileSettings 
-            userProfile={userProfile} 
-            uid={currentUser.uid}
-            onBack={() => setMode('dashboard')}
-          />
+        {mode === 'profile' && (
+          <ProfileSettings onBack={() => setMode('dashboard')} />
         )}
         {mode === 'squad' && (
           <SquadRoster onBack={() => setMode('dashboard')} />
@@ -278,14 +232,13 @@ export default function App() {
 
 // --- Dashboard Component ---
 function Dashboard({ 
-  velocity, 
+  cvScore,
+  cvState,
   suggestion, 
-  oracleAdvice, 
-  loadingOracle,
+  hypeMessage, 
   currentTime,
   onStartSession,
   userProfile,
-  onViewSquad,
   hrv,
   setHrv,
   availableTime,
@@ -293,14 +246,13 @@ function Dashboard({
   location,
   setLocation
 }: { 
-  velocity: number;
-  suggestion: AdaptiveSuggestion;
-  oracleAdvice: string;
-  loadingOracle: boolean;
+  cvScore: number;
+  cvState: string;
+  suggestion: any;
+  hypeMessage: string;
   currentTime: Date;
   onStartSession: () => void;
-  userProfile: UserProfile | null;
-  onViewSquad: () => void;
+  userProfile: UserProfile;
   hrv: number;
   setHrv: (v: number) => void;
   availableTime: number;
@@ -309,17 +261,7 @@ function Dashboard({
   setLocation: (loc: 'Home' | 'Gym') => void;
 }) {
   const ProfileIcon = PROFILE_ICONS.find(i => i.id === userProfile?.avatarId)?.Icon || Zap;
-  const [showMilestone, setShowMilestone] = useState(false);
-
-  // Trigger milestone animation mock
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setShowMilestone(true);
-      HapticEngine.milestone();
-      setTimeout(() => setShowMilestone(false), 5000);
-    }, 10000);
-    return () => clearTimeout(timer);
-  }, []);
+  const timeContext = getSimulatedTimeContext();
 
   return (
     <motion.main 
@@ -328,34 +270,12 @@ function Dashboard({
       exit={{ opacity: 0, x: -20 }}
       className="flex-1 flex flex-col p-10 gap-8 overflow-y-auto relative"
     >
-      <AnimatePresence>
-        {showMilestone && (
-          <motion.div 
-            initial={{ y: -100, opacity: 0 }}
-            animate={{ y: 20, opacity: 1 }}
-            exit={{ y: -100, opacity: 0 }}
-            className="absolute top-0 left-1/2 -translate-x-1/2 z-50 bg-aura-accent text-white px-8 py-4 rounded-2xl shadow-2xl flex items-center gap-4 border border-white/20"
-          >
-            <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center">
-              <Trophy size={20} />
-            </div>
-            <div>
-              <p className="text-[10px] font-black uppercase tracking-widest opacity-80">Squad Milestone Reached!</p>
-              <p className="text-sm font-bold">500km Seasonal Goal Completed</p>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
       {/* Header with Greeting */}
       <div className="flex justify-between items-center">
         <div className="flex items-center gap-6">
           <div className="w-20 h-20 rounded-[28px] bg-aura-surface border-2 border-aura-accent flex items-center justify-center text-aura-accent shadow-2xl shadow-aura-accent/20 relative group overflow-hidden">
             <div className="absolute inset-0 bg-aura-accent/10 opacity-0 group-hover:opacity-100 transition-opacity" />
             <ProfileIcon size={40} className="relative z-10" />
-            <div className="absolute -bottom-1 -right-1 w-6 h-6 bg-aura-green rounded-lg border-2 border-aura-card flex items-center justify-center">
-               <Zap size={10} className="text-white fill-current" />
-            </div>
           </div>
           <div>
             <h1 className="text-4xl font-black tracking-tighter mb-1">
@@ -369,10 +289,10 @@ function Dashboard({
           </div>
         </div>
         <div className="flex flex-col items-end">
-          <div className="text-[10px] font-black tracking-[2px] text-aura-text-secondary uppercase mb-2">System Status</div>
+          <div className="text-[10px] font-black tracking-[2px] text-aura-text-secondary uppercase mb-2">Offline Mode</div>
           <div className="px-4 py-2 rounded-xl bg-aura-surface border border-aura-border flex items-center gap-2 group cursor-default">
              <div className="w-2 h-2 rounded-full bg-aura-green animate-pulse shadow-[0_0_8px_var(--color-aura-green)]" />
-             <span className="text-xs font-black tracking-tight text-white group-hover:text-aura-accent transition-colors">VANGUARD-7 SYNCED</span>
+             <span className="text-xs font-black tracking-tight text-white group-hover:text-aura-accent transition-colors">LOCAL DATA SYNCED</span>
           </div>
         </div>
       </div>
@@ -383,48 +303,31 @@ function Dashboard({
         <div className="bg-aura-card border border-aura-border rounded-3xl p-6 flex flex-col gap-4">
           <span className="text-[11px] uppercase tracking-[1.5px] font-bold text-aura-text-secondary">Consistency Velocity</span>
           <div className="text-5xl font-bold flex items-baseline gap-2">
-            {(velocity * 100).toFixed(1)}
-            <span className="text-lg font-normal text-aura-text-secondary">%</span>
+            {cvScore.toFixed(1)}
+            <span className="text-lg font-normal text-aura-text-secondary">/ 100</span>
           </div>
           
-          <div className="flex-1 flex items-end justify-between gap-1.5 h-32 border-b border-aura-border pb-2">
-            {[35, 48, 62, 75, 88, 95, 0].map((h, i) => {
-              const isToday = i === 5;
-              const isPrevious = i < 5;
+          <div className="text-sm font-bold uppercase tracking-wider text-aura-accent">
+            Momentum: {cvState}
+          </div>
+          
+          <div className="flex-1 flex items-end justify-between gap-1.5 h-32 border-b border-aura-border pb-2 mt-4">
+            {[35, 48, 62, 75, cvScore, 0, 0].map((h, i) => {
+              const isToday = i === 4;
+              const isPrevious = i < 4;
               return (
                 <div 
                   key={i} 
                   className={`w-full rounded-t-lg transition-all duration-1000 relative group overflow-hidden ${h > 0 ? (isToday ? 'bg-aura-green' : 'bg-aura-green/40') : 'bg-aura-border/20'}`}
                   style={{ 
-                    height: `${h > 0 ? h : 12}%`,
+                    height: `${h > 0 ? Math.min(100, h) : 12}%`,
                     opacity: h > 0 ? (isToday ? 1 : 0.7) : 0.2
                   }}
                 >
                   {isToday && <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-white/20 to-transparent h-1/2" />}
-                  {isToday && (
-                    <motion.div 
-                      animate={{ opacity: [0.5, 1, 0.5] }}
-                      transition={{ repeat: Infinity, duration: 2 }}
-                      className="absolute inset-0 bg-aura-green blur-md -z-10" 
-                    />
-                  )}
-                  {isPrevious && (
-                    <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-aura-green/30 to-transparent h-full opacity-50" />
-                  )}
-                  {isToday && (
-                    <div className="absolute -top-6 left-1/2 -translate-x-1/2 text-[9px] font-black text-aura-green whitespace-nowrap">NOW</div>
-                  )}
                 </div>
               );
             })}
-          </div>
-          <div className="flex items-center gap-2 mt-2">
-            <div className="flex -space-x-1">
-              {[1, 2, 3, 4, 5, 6].map(i => (
-                <div key={i} className="w-2.5 h-2.5 rounded-full bg-aura-green opacity-80 border border-aura-bg" />
-              ))}
-            </div>
-            <span className="text-[10px] font-bold text-aura-green uppercase tracking-wider">Active Streak</span>
           </div>
         </div>
 
@@ -435,12 +338,12 @@ function Dashboard({
           </div>
           <span className="text-[11px] uppercase tracking-[1.5px] font-bold text-aura-accent mb-6 flex items-center gap-2">
             <Activity size={12} />
-            Predictive AI Engine
+            Predictive AI Engine (Local)
           </span>
           <h2 className="text-4xl font-black mb-4 tracking-tighter">
-            System Protocol
+            {timeContext.timeOfDay} Protocol
           </h2>
-          <p className="text-aura-text-secondary mb-8 text-sm italic relative z-10">"{loadingOracle ? "Processing neural vectors..." : oracleAdvice}"</p>
+          <p className="text-aura-text-secondary mb-8 text-sm italic relative z-10">"{hypeMessage}"</p>
           
           <div className="bg-black/40 backdrop-blur-xl border border-white/5 rounded-3xl p-8 flex-1 flex flex-col justify-center items-center text-center">
             <p className="text-[10px] text-aura-accent font-black tracking-[2px] uppercase mb-4">Optimal Vector</p>
@@ -466,33 +369,14 @@ function Dashboard({
           </button>
         </div>
 
-        {/* Right column: Social Ghost & Squad */}
+        {/* Right column: Simulator Constraints */}
         <div className="flex flex-col gap-6">
-          <div className="bg-aura-card border border-white/5 rounded-3xl p-6 flex flex-col gap-4">
-            <div className="flex justify-between items-start">
-              <span className="text-[11px] uppercase tracking-[2px] font-black text-aura-text-secondary">Rival Delta</span>
-              <Ghost size={16} className="text-aura-orange" />
-            </div>
-            <div className="flex items-baseline gap-2">
-              <span className="text-4xl font-black text-aura-orange tracking-tighter">+0:02.4</span>
-              <span className="text-xs font-bold text-aura-text-secondary opacity-60 uppercase">Ahead</span>
-            </div>
-            <div className="h-2 bg-aura-surface rounded-full mt-2 relative overflow-hidden border border-white/5">
-              <motion.div 
-                animate={{ x: ['-100%', '0%'] }}
-                className="absolute inset-y-0 left-0 bg-aura-orange w-[65%] rounded-full shadow-[0_0_12px_var(--color-aura-orange)]" 
-              />
-            </div>
-            <p className="text-[10px] text-aura-text-secondary font-medium tracking-tight">Your consistency is outpacing last Monday's session by 4.2%.</p>
-          </div>
-
           <div className="bg-aura-card border border-aura-border rounded-3xl p-6 flex flex-col flex-1 relative overflow-hidden">
             <div className="flex justify-between items-center mb-6">
               <span className="text-[11px] uppercase tracking-[1.5px] font-black text-aura-text-secondary">Simulated Environment</span>
             </div>
             
             <div className="space-y-4">
-              {/* HRV Simulator */}
               <div>
                 <div className="flex justify-between text-[10px] font-black uppercase mb-2">
                    <span>Readiness (HRV)</span>
@@ -505,7 +389,6 @@ function Dashboard({
                 />
               </div>
 
-              {/* Time Simulator */}
               <div>
                 <div className="flex justify-between text-[10px] font-black uppercase mb-2">
                    <span>Uptime (Time)</span>
@@ -518,7 +401,6 @@ function Dashboard({
                 />
               </div>
 
-              {/* Geofencing Simulator */}
               <div className="grid grid-cols-2 gap-2 mt-4">
                 <button 
                   onClick={() => setLocation('Home')}
@@ -548,7 +430,6 @@ function WorkoutSetup({
   target, 
   onSetTarget, 
   onBegin,
-  loading,
   onBack 
 }: { 
   difficulty: Difficulty;
@@ -556,7 +437,6 @@ function WorkoutSetup({
   target: TargetArea;
   onSetTarget: (t: TargetArea) => void;
   onBegin: () => void;
-  loading: boolean;
   onBack: () => void;
 }) {
   return (
@@ -609,11 +489,10 @@ function WorkoutSetup({
 
         <button 
           onClick={onBegin}
-          disabled={loading}
-          className="w-full bg-white py-6 rounded-2xl text-aura-bg font-black text-xl tracking-tighter hover:scale-[1.01] transition-transform flex items-center justify-center gap-4 disabled:opacity-50"
+          className="w-full bg-white py-6 rounded-2xl text-aura-bg font-black text-xl tracking-tighter hover:scale-[1.01] transition-transform flex items-center justify-center gap-4"
         >
-          {loading ? "Generating Visuals..." : "INITIATE SESSION"}
-          {!loading && <MonitorPlay size={20} />}
+          INITIATE SESSION
+          <MonitorPlay size={20} />
         </button>
       </div>
     </motion.main>
@@ -625,19 +504,21 @@ function ActiveWorkout({
   suggestion, 
   onEndSession,
   hypeMessage,
-  exercises
+  exercises,
+  use3DVisualizer,
+  enableComputerVision
 }: { 
-  suggestion: AdaptiveSuggestion;
-  onEndSession: () => void;
+  suggestion: any;
+  onEndSession: (duration: number) => void;
   hypeMessage: string;
   exercises: Exercise[];
+  use3DVisualizer: boolean;
+  enableComputerVision: boolean;
 }) {
   const [elapsed, setElapsed] = useState(0);
   const [dist, setDist] = useState(0);
   const [isAhead, setIsAhead] = useState(true);
   const [delta, setDelta] = useState(2.4);
-  const [lastHapticState, setLastHapticState] = useState<boolean | null>(null);
-  const [showExitConfirm, setShowExitConfirm] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -648,23 +529,11 @@ function ActiveWorkout({
       const ghostPoint = DEFAULT_GHOST_TRAIL.find(p => p.time >= elapsed + 1) || DEFAULT_GHOST_TRAIL[DEFAULT_GHOST_TRAIL.length-1];
       const newDelta = (dist + randomGain) - ghostPoint.dist;
       setDelta(Number(Math.abs(newDelta).toFixed(1)));
-      const nowAhead = newDelta >= 0;
-      
-      // Haptic Feedback Logic
-      if (nowAhead !== lastHapticState) {
-        if (nowAhead) {
-          HapticEngine.ahead();
-        } else {
-          HapticEngine.behind();
-        }
-        setLastHapticState(nowAhead);
-      }
-      
-      setIsAhead(nowAhead);
+      setIsAhead(newDelta >= 0);
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [elapsed, dist, lastHapticState]);
+  }, [elapsed, dist]);
 
   const formatTime = (s: number) => {
     const mins = Math.floor(s / 60);
@@ -681,26 +550,16 @@ function ActiveWorkout({
     >
       <div className="flex justify-between items-center mb-10">
         <button 
-          onClick={() => setShowExitConfirm(true)} 
+          onClick={() => onEndSession(elapsed)} 
           className="flex items-center gap-2 px-6 py-3 rounded-2xl bg-aura-card border border-aura-border hover:bg-aura-surface transition-all active:scale-95 shadow-lg"
         >
           <ArrowLeft size={16} />
-          <span className="text-xs font-black uppercase tracking-widest">Abort Protocol</span>
+          <span className="text-xs font-black uppercase tracking-widest">End Protocol</span>
         </button>
 
         <div className="bg-aura-accent/10 px-6 py-3 rounded-full border border-aura-accent/20 text-xs font-black text-aura-accent flex items-center gap-3">
           <Zap size={14} />
           "{hypeMessage}"
-        </div>
-
-        <div className="flex items-center gap-4">
-          <div className="text-right">
-            <p className="text-[10px] font-black text-aura-text-secondary uppercase tracking-[2px]">Competition Status</p>
-            <p className={`text-xs font-black uppercase ${isAhead ? 'text-aura-green' : 'text-aura-orange'}`}>
-              {isAhead ? 'Velocity Advantage' : 'Recovering Deficit'}
-            </p>
-          </div>
-          <div className={`w-4 h-4 rounded-full ${isAhead ? 'bg-aura-green shadow-[0_0_15px_var(--color-aura-green)]' : 'bg-aura-orange shadow-[0_0_15px_var(--color-aura-orange)]'} animate-pulse`} />
         </div>
       </div>
 
@@ -717,27 +576,25 @@ function ActiveWorkout({
                     <div className="absolute top-0 left-0 w-1 h-full bg-aura-accent opacity-50" />
                     <div className="flex justify-between items-start">
                       <div>
-                        <p className="text-aura-accent font-black text-[11px] tracking-[3px] uppercase mb-3">Core Engagement Sequence</p>
                         <h2 className="text-5xl font-black tracking-tighter">{ex.name}</h2>
                         <div className="flex items-center gap-4 mt-3">
                            <span className="bg-aura-surface border border-aura-border px-3 py-1 rounded-lg text-xs font-black text-white">{ex.reps}</span>
                            <span className="text-aura-text-secondary text-xs font-bold uppercase tracking-wider flex items-center gap-1"><Heart size={10} className="text-aura-red" /> 142 BPM</span>
                         </div>
                       </div>
-                      <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center">
-                        <MonitorPlay size={32} className="text-aura-text-secondary" />
-                      </div>
                     </div>
                     
-                    <div className="aspect-video w-full rounded-3xl bg-black overflow-hidden ring-4 ring-white/[0.03] shadow-[0_30px_60px_-15px_rgba(0,0,0,0.5)]">
-                      {ex.imageUrl ? (
-                        <img src={ex.imageUrl} className="w-full h-full object-cover" alt={ex.name} referrerPolicy="no-referrer" />
-                      ) : (
-                        <div className="w-full h-full flex flex-col items-center justify-center gap-4 text-aura-border">
-                          <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 2 }}><Zap size={48} /></motion.div>
-                          <span className="font-black text-sm tracking-widest uppercase opacity-40">Rasterizing Engine...</span>
-                        </div>
-                      )}
+                    <div className="aspect-video w-full rounded-3xl bg-aura-surface flex items-center justify-center border border-white/10 overflow-hidden ring-4 ring-white/[0.03] shadow-[0_30px_60px_-15px_rgba(0,0,0,0.5)]">
+                        {enableComputerVision ? (
+                          <PoseDetector />
+                        ) : use3DVisualizer ? (
+                          <Visualizer3D activeExercise={ex.name} />
+                        ) : (
+                          <div className="w-full h-full flex flex-col items-center justify-center gap-4 text-aura-border">
+                            <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 2 }}><Zap size={48} /></motion.div>
+                            <span className="font-black text-sm tracking-widest uppercase opacity-40">Rasterizing Local Guide...</span>
+                          </div>
+                        )}
                     </div>
 
                     <p className="text-aura-text-secondary text-sm leading-relaxed font-medium italic border-l-4 border-aura-accent/30 pl-6 py-2">
@@ -748,23 +605,10 @@ function ActiveWorkout({
             </div>
 
             <div className="flex gap-20 pb-8 mt-12 bg-aura-surface/50 p-10 rounded-[32px] border border-white/5">
-              <div>
-                <p className="text-aura-text-secondary font-black uppercase tracking-[3px] text-[10px] mb-3">Network Traversal</p>
-                <h4 className="text-8xl font-black text-white leading-none tracking-tighter tabular-nums flex items-baseline gap-4">
-                    {(dist / 1000).toFixed(2)}
-                    <span className="text-2xl text-aura-text-secondary font-black opacity-30 italic">KM</span>
-                </h4>
-              </div>
               <div className="flex gap-16">
                 <div>
                     <p className="text-aura-text-secondary font-black uppercase tracking-[3px] text-[10px] mb-3">Uptime</p>
                     <p className="text-4xl font-black font-mono text-white tabular-nums tracking-tighter">{formatTime(elapsed)}</p>
-                </div>
-                <div>
-                    <p className="text-aura-text-secondary font-black uppercase tracking-[3px] text-[10px] mb-3">Sync Power</p>
-                    <p className={`text-4xl font-black tracking-tighter ${isAhead ? 'text-aura-green' : 'text-aura-orange'}`}>
-                    {isAhead ? '100%' : '82.4%'}
-                    </p>
                 </div>
               </div>
             </div>
@@ -781,7 +625,7 @@ function ActiveWorkout({
                   <Ghost size={80} className={`${isAhead ? 'text-aura-green' : 'text-aura-orange'} mb-8 drop-shadow-[0_0_20px_currentColor]`} strokeWidth={2.5} />
                 </motion.div>
                 <p className="text-aura-text-secondary font-black uppercase tracking-[4px] text-[10px] mb-2">
-                    GHOST SYNCHRONANT
+                    LOCAL GHOST SYNCHRONANT
                 </p>
                 <div className="flex items-center justify-center gap-2">
                     <h3 className={`text-8xl font-black ${isAhead ? 'text-aura-green' : 'text-aura-orange'} tabular-nums tracking-tighter`}>
@@ -793,353 +637,50 @@ function ActiveWorkout({
                     {isAhead ? 'Protocol Dominance' : 'Reacquisition Mode'}
                 </div>
             </div>
-
-            {/* Live Squad Status */}
-            <div className="bg-aura-card border border-white/5 rounded-[48px] p-10 flex flex-col flex-1 shadow-2xl">
-                <span className="text-[11px] uppercase tracking-[3px] font-black text-aura-text-secondary mb-8">Squad Live Vectors</span>
-                <div className="space-y-6">
-                   {[
-                     { name: 'VALKYRIE', stat: '1.2km', active: true, color: '#4D96FF' },
-                     { name: 'ORION', stat: '0.4km', active: true, color: '#00F5A0' },
-                     { name: 'ECHO', stat: 'Standby', active: false, color: '#8F9BB3' },
-                   ].map(m => (
-                     <div key={m.name} className="flex justify-between items-center group">
-                        <div className="flex items-center gap-4">
-                            <div className="w-10 h-10 rounded-xl bg-white/5 flex items-center justify-center group-hover:bg-white/10 transition-colors">
-                               <Users size={16} style={{ color: m.color }} />
-                            </div>
-                            <div className="flex flex-col">
-                                <span className="text-xs font-black tracking-tight">{m.name}</span>
-                                <div className="flex items-center gap-1.5">
-                                  <div className={`w-1 h-1 rounded-full ${m.active ? 'bg-aura-green' : 'bg-aura-text-secondary opacity-30'}`} />
-                                  <span className="text-[9px] font-bold text-aura-text-secondary uppercase">{m.active ? 'Sync Online' : 'Offline'}</span>
-                                </div>
-                            </div>
-                        </div>
-                        <span className="text-[10px] font-black font-mono text-aura-text-secondary bg-white/5 px-2 py-1 rounded select-none">{m.stat}</span>
-                     </div>
-                   ))}
-                </div>
-                
-                <div className="mt-auto pt-10">
-                    <div className="flex justify-between text-[10px] font-black uppercase tracking-[3px] mb-4">
-                        <span className="text-aura-text-secondary">Collective Progress</span>
-                        <span className="text-aura-accent">4.8km Delta</span>
-                    </div>
-                    <div className="h-1.5 bg-aura-surface rounded-full overflow-hidden border border-white/5 p-[1px]">
-                        <motion.div 
-                          animate={{ x: ['-100%', '0%'] }}
-                          transition={{ duration: 1.5 }}
-                          className="h-full bg-aura-accent rounded-full shadow-[0_0_15px_var(--color-aura-accent)]" 
-                        />
-                    </div>
-                </div>
-            </div>
         </div>
       </div>
-
-      <button 
-        onClick={() => setShowExitConfirm(true)}
-        className="mt-10 w-full max-w-md mx-auto bg-white hover:bg-aura-green hover:text-aura-bg transition-all py-7 rounded-3xl text-aura-bg font-black text-xl tracking-tighter shadow-2xl hover:scale-[1.02] active:scale-95"
-      >
-        SYNC PROTOCOL DATA
-      </button>
-
-      <AnimatePresence>
-        {showExitConfirm && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/80 backdrop-blur-md"
-          >
-            <motion.div 
-              initial={{ scale: 0.9, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.9, y: 20 }}
-              className="bg-aura-card border border-white/10 p-10 rounded-[40px] max-w-sm w-full shadow-2xl text-center space-y-8"
-            >
-              <div className="w-20 h-20 rounded-[28px] bg-aura-accent/10 flex items-center justify-center text-aura-accent mx-auto">
-                <Target size={40} className="animate-pulse" />
-              </div>
-              
-              <div>
-                <h3 className="text-3xl font-black tracking-tighter mb-3">Terminate Protocol?</h3>
-                <p className="text-aura-text-secondary text-sm font-medium leading-relaxed">
-                  Ending this session now will stop all active data synchronant tracking. Consistency velocity may be affected.
-                </p>
-              </div>
-
-              <div className="flex flex-col gap-3">
-                <button 
-                  onClick={onEndSession}
-                  className="w-full bg-white text-aura-bg py-5 rounded-2xl font-black text-lg tracking-tighter hover:bg-aura-red hover:text-white transition-all active:scale-95"
-                >
-                  CONFIRM TERMINATION
-                </button>
-                <button 
-                  onClick={() => setShowExitConfirm(false)}
-                  className="w-full bg-aura-surface border border-aura-border text-aura-text-secondary py-5 rounded-2xl font-black text-xs uppercase tracking-[2px] hover:text-white hover:bg-white/5 transition-all"
-                >
-                  RESUME UPTIME
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </motion.div>
   );
 }
 
-// --- Profile Settings Component ---
-function ProfileSettings({ 
-  userProfile, 
-  uid, 
-  onBack 
-}: { 
-  userProfile: UserProfile;
-  uid: string;
-  onBack: () => void;
-}) {
-  const [displayName, setDisplayName] = useState(userProfile.displayName);
-  const [avatarId, setAvatarId] = useState(userProfile.avatarId);
-  const [loading, setLoading] = useState(false);
-  const [success, setSuccess] = useState(false);
-
-  const handleUpdate = async () => {
-    setLoading(true);
-    try {
-      await updateDoc(doc(db, 'users', uid), {
-        displayName,
-        avatarId,
-        updatedAt: new Date().toISOString()
-      });
-      setSuccess(true);
-      setTimeout(() => setSuccess(false), 3000);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
+// --- Squad Component (Local Mock) ---
+function SquadRoster({ onBack }: { onBack: () => void }) {
+  const { state } = useAppStore();
+  
   return (
     <motion.main 
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.95 }}
-      className="flex-1 flex flex-col p-12 max-w-4xl mx-auto"
+      initial={{ opacity: 0, x: 20 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: -20 }}
+      className="flex-1 flex flex-col p-10 overflow-y-auto"
     >
-      <button onClick={onBack} className="flex items-center gap-2 text-aura-text-secondary hover:text-white transition-all mb-12 self-start bg-aura-card px-4 py-2 rounded-xl border border-aura-border shadow-lg active:scale-95">
+      <button onClick={onBack} className="flex items-center gap-2 text-aura-text-secondary hover:text-white transition-colors mb-8">
         <ArrowLeft size={16} />
-        <span className="text-xs font-black uppercase tracking-[2px]">Return to Engine</span>
+        <span className="text-xs font-bold uppercase tracking-widest">Back to Overview</span>
       </button>
 
-      <div className="bg-aura-card border border-aura-border rounded-[48px] p-12 shadow-2xl relative overflow-hidden">
-        <div className="absolute top-0 right-0 w-64 h-64 bg-aura-accent/10 blur-[120px] -z-10" />
-        
-        <header className="mb-12">
-          <h2 className="text-5xl font-black tracking-tighter mb-2">Protocol Customization</h2>
-          <p className="text-aura-text-secondary font-medium italic">Adjust your pilot identity and core visual signature.</p>
-        </header>
-
-        <section className="grid grid-cols-2 gap-16">
-          <div className="space-y-10">
-            <div>
-              <label className="text-[11px] font-black uppercase tracking-[4px] text-aura-accent mb-4 block">Pilot Designation</label>
-              <div className="relative group">
-                <input 
-                  type="text" 
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  className="w-full bg-aura-surface border-2 border-aura-border rounded-2xl px-6 py-4 text-lg font-bold focus:border-aura-accent outline-none transition-all shadow-inner"
-                  placeholder="Designate yourself..."
-                />
-                <div className="absolute right-4 top-1/2 -translate-y-1/2 opacity-20 group-focus-within:opacity-100 group-focus-within:text-aura-accent transition-all">
-                   <Target size={24} />
-                </div>
+      <h1 className="text-4xl font-black tracking-tighter mb-10">Simulated Squad Vector</h1>
+      
+      <div className="grid grid-cols-2 gap-6">
+        {state.squad.map((member) => {
+          const Icon = PROFILE_ICONS.find(i => i.id === member.avatarId)?.Icon || Users;
+          return (
+            <div key={member.id} className="bg-aura-card border border-aura-border rounded-3xl p-6 flex items-center gap-6">
+              <div className="w-16 h-16 rounded-2xl bg-aura-surface flex items-center justify-center text-aura-accent">
+                <Icon size={24} />
+              </div>
+              <div className="flex-1">
+                <h3 className="font-black text-xl">{member.name}</h3>
+                <p className="text-aura-text-secondary text-sm">Activity Level: {member.activityLevel}%</p>
+              </div>
+              <div className="text-right">
+                <div className="w-3 h-3 rounded-full bg-aura-green animate-pulse inline-block mb-1" />
+                <p className="text-[10px] font-black uppercase tracking-widest text-aura-text-secondary">Simulated Sync</p>
               </div>
             </div>
-
-            <div>
-              <label className="text-[11px] font-black uppercase tracking-[4px] text-aura-accent mb-6 block">Core Visual Identity</label>
-              <div className="grid grid-cols-3 gap-4">
-                {PROFILE_ICONS.map(({ id, Icon }) => (
-                  <button 
-                    key={id}
-                    onClick={() => setAvatarId(id)}
-                    className={`aspect-square rounded-[32px] border-2 flex flex-col items-center justify-center gap-3 transition-all active:scale-90 ${avatarId === id ? 'bg-aura-accent border-aura-accent text-white shadow-2xl shadow-aura-accent/30' : 'bg-aura-surface border-aura-border text-aura-text-secondary hover:border-aura-accent/30'}`}
-                  >
-                    <Icon size={32} strokeWidth={avatarId === id ? 2.5 : 2} />
-                    <span className="text-[9px] font-black uppercase tracking-widest">{id}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="flex flex-col">
-            <div className="bg-black/20 rounded-[40px] border border-white/5 p-10 flex-1 flex flex-col items-center justify-center text-center">
-               <div className="w-32 h-32 rounded-[40px] bg-aura-surface border-4 border-aura-accent/20 flex items-center justify-center text-aura-accent shadow-[0_0_50px_rgba(0,0,0,0.5)] mb-8 relative">
-                  {React.createElement(PROFILE_ICONS.find(i => i.id === avatarId)?.Icon || Zap, { size: 64 })}
-                  <motion.div 
-                    animate={{ rotate: 360 }} 
-                    transition={{ repeat: Infinity, duration: 20, ease: "linear" }}
-                    className="absolute inset-[-10px] border border-aura-accent/10 rounded-[50px] border-dashed" 
-                  />
-               </div>
-               <h3 className="text-2xl font-black mb-2">{displayName}</h3>
-               <p className="text-xs text-aura-text-secondary font-black tracking-widest uppercase opacity-40">Pilot Preview</p>
-               
-               <div className="mt-12 w-full grid grid-cols-2 gap-4">
-                 <div className="bg-aura-surface p-4 rounded-2xl border border-white/5">
-                    <p className="text-[9px] font-black text-aura-accent uppercase tracking-widest mb-1">Status</p>
-                    <p className="text-sm font-bold">READY</p>
-                 </div>
-                 <div className="bg-aura-surface p-4 rounded-2xl border border-white/5">
-                    <p className="text-[9px] font-black text-aura-accent uppercase tracking-widest mb-1">Assigned</p>
-                    <p className="text-sm font-bold">VANGUARD-7</p>
-                 </div>
-               </div>
-            </div>
-
-            <button 
-              onClick={handleUpdate}
-              disabled={loading}
-              className={`mt-10 py-6 rounded-3xl font-black text-xl tracking-tighter transition-all flex items-center justify-center gap-4 active:scale-95 shadow-2xl ${success ? 'bg-aura-green text-aura-bg' : 'bg-white text-aura-bg hover:bg-aura-accent hover:text-white'}`}
-            >
-              {loading ? 'SYNCING...' : success ? 'PROTOCOL UPDATED' : 'COMMIT CHANGES'}
-              {success ? <Zap size={20} className="fill-current" /> : <ChevronRight size={20} />}
-            </button>
-          </div>
-        </section>
+          );
+        })}
       </div>
-    </motion.main>
-  );
-}
-
-// --- Squad Roster Component ---
-function SquadRoster({ onBack }: { onBack: () => void }) {
-  const SQUAD_MEMBERS = [
-    { id: '1', name: 'VALKYRIE', avatar: '12', velocity: 0.98, role: 'Lead Optimizer', status: 'In Session' },
-    { id: '2', name: 'ORION', avatar: '45', velocity: 0.85, role: 'Endurance Pilot', status: 'Ready' },
-    { id: '3', name: 'ECHO', avatar: '89', velocity: 0.92, role: 'Recovery Spec', status: 'Resting' },
-    { id: '4', name: 'PHOENIX', avatar: '23', velocity: 0.78, role: 'Strength Vector', status: 'Online' },
-    { id: '5', name: 'ZENITH', avatar: '67', velocity: 0.95, role: 'Flex Navigator', status: 'Active' },
-  ];
-
-  return (
-    <motion.main 
-      initial={{ opacity: 0, scale: 0.95 }}
-      animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.95 }}
-      className="flex-1 flex flex-col p-12 max-w-5xl mx-auto overflow-y-auto"
-    >
-      <header className="flex justify-between items-center mb-12">
-        <div className="flex items-center gap-6">
-          <button 
-            onClick={onBack}
-            className="w-12 h-12 rounded-2xl bg-aura-card border border-aura-border flex items-center justify-center text-aura-text-secondary hover:text-white transition-all shadow-lg active:scale-90"
-          >
-            <ArrowLeft size={20} />
-          </button>
-          <div>
-            <h2 className="text-4xl font-black tracking-tighter mb-1 uppercase text-white">Squad Vanguard Roster</h2>
-            <p className="text-aura-text-secondary font-black text-[10px] tracking-[3px] uppercase">Fleet Designation: Neom Coast Pathfinders</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-4 bg-aura-accent/10 px-6 py-3 rounded-2xl border border-aura-accent/20">
-          <Users className="text-aura-accent" size={18} />
-          <span className="text-xs font-black tracking-widest uppercase text-aura-accent">5 / 5 OPERATIVES</span>
-        </div>
-      </header>
-
-      <div className="grid grid-cols-1 gap-4">
-        {SQUAD_MEMBERS.map((member, i) => (
-          <motion.div 
-            initial={{ x: -20, opacity: 0 }}
-            animate={{ x: 0, opacity: 1 }}
-            transition={{ delay: i * 0.1 }}
-            key={member.id}
-            className="bg-aura-card border border-white/5 rounded-[32px] p-6 flex items-center justify-between group hover:border-aura-accent/50 transition-all shadow-xl hover:shadow-aura-accent/5"
-          >
-            <div className="flex items-center gap-6">
-              <div className="w-16 h-16 rounded-2xl bg-aura-surface border border-aura-border overflow-hidden ring-2 ring-white/5 group-hover:ring-aura-accent/30 transition-all">
-                <img 
-                  src={`https://picsum.photos/seed/${member.avatar}/100/100`} 
-                  alt={member.name} 
-                  className="w-full h-full object-cover" 
-                  referrerPolicy="no-referrer"
-                />
-              </div>
-              <div>
-                <h3 className="text-xl font-black tracking-tight group-hover:text-aura-accent transition-colors text-white">{member.name}</h3>
-                <p className="text-[10px] font-bold text-aura-text-secondary uppercase tracking-[1px]">{member.role}</p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-12">
-              <div className="flex flex-col text-center">
-                 <span className="text-[9px] font-black text-aura-text-secondary uppercase tracking-widest mb-1">Consistency</span>
-                 <span className="text-lg font-black text-aura-green">{(member.velocity * 100).toFixed(0)}%</span>
-              </div>
-              
-              <div className="w-32 hidden md:block">
-                <div className="flex justify-between text-[9px] font-bold uppercase mb-1 opacity-60">
-                  <span className="text-white">Sync</span>
-                  <span className="text-aura-accent">Active</span>
-                </div>
-                <div className="h-1 bg-aura-surface rounded-full overflow-hidden p-[1px] border border-white/5">
-                  <motion.div 
-                    initial={{ width: 0 }}
-                    animate={{ width: `${member.velocity * 100}%` }}
-                    className="h-full bg-aura-accent rounded-full" 
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center gap-3 w-32 justify-end">
-                <div className={`w-2 h-2 rounded-full ${member.status === 'In Session' || member.status === 'Active' ? 'bg-aura-green animate-pulse shadow-[0_0_8px_var(--color-aura-green)]' : 'bg-aura-border opacity-50'}`} />
-                <span className={`text-[10px] font-black uppercase tracking-widest ${member.status === 'In Session' || member.status === 'Active' ? 'text-white' : 'text-aura-text-secondary'}`}>
-                  {member.status}
-                </span>
-              </div>
-            </div>
-          </motion.div>
-        ))}
-      </div>
-
-      <footer className="mt-12 p-8 bg-aura-surface/50 rounded-[40px] border border-white/5 grid grid-cols-1 md:grid-cols-3 gap-8">
-        <div className="space-y-2">
-            <p className="text-[9px] font-black text-aura-accent uppercase tracking-widest">Shared XP Goal</p>
-            <div className="flex items-baseline gap-2">
-              <span className="text-2xl font-black text-white">12,400</span>
-              <span className="text-[10px] text-aura-text-secondary font-bold uppercase">/ 15,000</span>
-            </div>
-            <div className="h-1.5 bg-aura-card rounded-full overflow-hidden">
-                <div className="h-full bg-aura-accent w-[82%]" />
-            </div>
-        </div>
-        <div className="space-y-2">
-            <p className="text-[9px] font-black text-aura-accent uppercase tracking-widest">Active Operatives</p>
-            <div className="flex items-center gap-3">
-              <div className="flex -space-x-2">
-                {SQUAD_MEMBERS.filter(m => m.status !== 'Resting').map(m => (
-                  <div key={m.id} className="w-8 h-8 rounded-lg border-2 border-aura-surface overflow-hidden">
-                    <img src={`https://picsum.photos/seed/${m.avatar}/40/40`} referrerPolicy="no-referrer" />
-                  </div>
-                ))}
-              </div>
-              <span className="text-xs font-bold text-white uppercase tracking-tighter">{SQUAD_MEMBERS.filter(m => m.status !== 'Resting').length} Online</span>
-            </div>
-        </div>
-        <div className="flex flex-col justify-center">
-          <button className="bg-aura-accent hover:bg-white text-aura-bg text-[10px] font-black uppercase tracking-[2px] py-4 rounded-2xl transition-all active:scale-95 shadow-lg shadow-aura-accent/20">
-            Broadcast Sync Signal
-          </button>
-        </div>
-      </footer>
     </motion.main>
   );
 }
